@@ -26,14 +26,23 @@ def get_client():
 
 
 @st.cache_resource
-def get_model(_client):
-    # If you set MODEL in Secrets, use that exact model
+def get_models(_client):
+    # A list of models to try, in order. If one is busy, the app moves to the next.
+    models = []
     if "MODEL" in st.secrets:
-        return st.secrets["MODEL"]
-    # Otherwise prefer a "lite" model because it's usually less busy
-    names = [m.name.replace("models/", "") for m in _client.models.list()]
-    lite = [n for n in names if "flash-lite" in n]
-    return lite[0] if lite else "gemini-3.8-flash"
+        models.append(st.secrets["MODEL"])  # your chosen model goes first
+    try:
+        names = [m.name.replace("models/", "") for m in _client.models.list()]
+    except Exception:
+        names = []
+    # Backups: "lite" models first (fastest), then regular "flash" models
+    for n in names:
+        if "flash-lite" in n and n not in models:
+            models.append(n)
+    for n in names:
+        if "flash" in n and "lite" not in n and n not in models:
+            models.append(n)
+    return models[:4] or ["gemini-3.8-flash"]
 
 
 @st.cache_resource
@@ -57,7 +66,7 @@ def get_schema(_conn):
 
 
 client = get_client()
-MODEL = get_model(client)
+MODELS = get_models(client)
 conn = get_conn()
 schema = get_schema(conn)
 
@@ -72,51 +81,71 @@ Return JSON with these keys:
   "warning": any assumption or data issue the user should know about, or "" if none"""
 
 
-# ---------- AI helper with retries ----------
+# ---------- AI helper: switches models instead of waiting ----------
 LAST_ERROR = {"msg": ""}
 
 
-def call_ai(prompt):
-    for attempt in range(5):
-        try:
-            r = client.models.generate_content(
-                model=MODEL,
-                contents=prompt,
-                config={"response_mime_type": "application/json"},
-            )
-            text = r.text.strip().replace("```json", "").replace("```", "")
-            return json.loads(text)
-        except Exception as e:
-            LAST_ERROR["msg"] = str(e)
-            # Only wait and retry if the server is busy; other errors won't fix themselves
-            if "503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e):
-                time.sleep(5 * (attempt + 1))
-            elif isinstance(e, json.JSONDecodeError):
-                continue
-            else:
-                break
+def call_ai(prompt, log):
+    # Go through the model list twice. If a model fails, jump straight to the next one.
+    for round_num in range(2):
+        for model in MODELS:
+            try:
+                log(f"Asking {model}...")
+                r = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"},
+                )
+                text = r.text.strip().replace("```json", "").replace("```", "")
+                return json.loads(text)
+            except Exception as e:
+                LAST_ERROR["msg"] = f"{model}: {e}"
+                busy = any(code in str(e) for code in ["503", "UNAVAILABLE", "429"])
+                log(f"{model} is busy, trying another model..." if busy
+                    else f"{model} failed, trying another model...")
+        # Every model failed this round, so wait a little before one more try
+        if round_num == 0:
+            log("All models busy. Waiting 5 seconds...")
+            time.sleep(5)
     return None
 
 
 # ---------- Main logic ----------
-def ask(question):
+@st.cache_resource
+def get_saved_answers():
+    # Shared by everyone using the app. Saves AI calls (and your free daily limit).
+    return {}
+
+
+def ask(question, log):
+    saved = get_saved_answers()
+    key = question.strip().lower()
+    if key in saved:
+        log("This question was asked before. Using the saved answer (no AI call needed).")
+        plan = saved[key]
+        return plan, pd.read_sql(plan["sql"], conn), []
+
     prompt = (
         f"You are a careful SQL expert. SQLite database:\n{schema}\n"
         f"Question: {question}\n{RULES}"
     )
-    plan = call_ai(prompt)
+    plan = call_ai(prompt, log)
     if plan is None:
-        return None, None, f"The AI call failed (model: {MODEL}).\n\nError: {LAST_ERROR['msg']}"
+        return None, None, f"All AI models failed or were busy. Try again in a minute.\n\nLast error: {LAST_ERROR['msg']}"
 
     fixes = []
     for _ in range(3):
         try:
+            log("Running the SQL on the database...")
             result = pd.read_sql(plan["sql"], conn)
+            saved[key] = plan  # save it so the same question is free next time
             return plan, result, fixes
         except Exception as e:
             fixes.append(f"`{plan['sql']}` failed: {e}")
+            log("The SQL had an error. Asking the AI to fix it...")
             plan = call_ai(
-                prompt + f"\n\nYour last query:\n{plan['sql']}\nfailed with:\n{e}\nFix it."
+                prompt + f"\n\nYour last query:\n{plan['sql']}\nfailed with:\n{e}\nFix it.",
+                log,
             )
             if plan is None:
                 break
@@ -134,12 +163,13 @@ def show_chart(result):
             .mark_bar()
             .encode(
                 x=alt.X(f"{value}:Q", title=value, axis=alt.Axis(format=",.0f")),
+                # Biggest at the top, and show every name (don't hide any labels)
                 y=alt.Y(f"{label}:N", title=None, sort="-x", axis=alt.Axis(labelOverlap=False)),
                 tooltip=[label, alt.Tooltip(value, format=",.0f")],
             )
             .properties(height=max(200, 35 * len(result)))
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
 
 
 # ---------- Page layout ----------
@@ -152,8 +182,16 @@ st.markdown(
 question = st.text_input("Your question")
 
 if st.button("Ask", type="primary") and question:
-    with st.spinner("Thinking..."):
-        plan, result, extra = ask(question)
+    start = time.time()
+    # Show live progress so the user knows what's happening while they wait
+    with st.status("Working on it...", expanded=True) as status:
+        plan, result, extra = ask(question, status.write)
+        seconds = time.time() - start
+        status.update(
+            label=f"Done in {seconds:.1f} seconds" if plan else "Something went wrong",
+            state="complete" if plan else "error",
+            expanded=False,
+        )
 
     if plan is None:
         st.error(extra)
@@ -167,7 +205,7 @@ if st.button("Ask", type="primary") and question:
         # Show big numbers with commas (1,372,795,000 instead of 1372795000)
         st.dataframe(
             result.style.format(precision=0, thousands=","),
-            use_container_width=True,
+            width="stretch",
         )
         show_chart(result)
 
