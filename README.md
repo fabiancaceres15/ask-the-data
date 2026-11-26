@@ -2,6 +2,9 @@
 
 **Ask questions about soccer data in plain English. An AI writes the SQL, runs it, and shows its work so you can check the answer.**
 
+<img width="994" height="700" alt="Screenshot 2026-11-25 at 10 09 29 PM" src="https://github.com/user-attachments/assets/b3f8ca12-7de2-4367-97ae-26d563dd96c9" />
+<img width="1042" height="676" alt="Screenshot 2026-11-25 at 10 09 50 PM" src="https://github.com/user-attachments/assets/de04eab4-642e-496e-8703-df84de52643d" />
+
 🔗 **Live app:** [ask-the-data.streamlit.app](https://ask-the-data-vswupsnmapp2ueh3xkybhfn.streamlit.app/)
 
 ---
