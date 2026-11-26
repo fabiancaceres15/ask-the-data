@@ -134,7 +134,7 @@ def show_chart(result):
             .mark_bar()
             .encode(
                 x=alt.X(f"{value}:Q", title=value, axis=alt.Axis(format=",.0f")),
-                y=alt.Y(f"{label}:N", title=None, sort="-x"),  # biggest at the top
+                y=alt.Y(f"{label}:N", title=None, sort="-x", axis=alt.Axis(labelOverlap=False)),
                 tooltip=[label, alt.Tooltip(value, format=",.0f")],
             )
             .properties(height=max(200, 25 * len(result)))
