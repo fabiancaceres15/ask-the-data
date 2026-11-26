@@ -137,7 +137,7 @@ def show_chart(result):
                 y=alt.Y(f"{label}:N", title=None, sort="-x", axis=alt.Axis(labelOverlap=False)),
                 tooltip=[label, alt.Tooltip(value, format=",.0f")],
             )
-            .properties(height=max(200, 25 * len(result)))
+            .properties(height=max(200, 35 * len(result)))
         )
         st.altair_chart(chart, use_container_width=True)
 
