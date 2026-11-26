@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import time
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from google import genai
@@ -127,7 +128,18 @@ def show_chart(result):
     text_cols = result.select_dtypes(include="object").columns
     num_cols = result.select_dtypes(include="number").columns
     if len(result) > 1 and len(text_cols) >= 1 and len(num_cols) >= 1:
-        st.bar_chart(result.set_index(text_cols[0])[num_cols[0]])
+        label, value = text_cols[0], num_cols[0]
+        chart = (
+            alt.Chart(result)
+            .mark_bar()
+            .encode(
+                x=alt.X(f"{value}:Q", title=value, axis=alt.Axis(format=",.0f")),
+                y=alt.Y(f"{label}:N", title=None, sort="-x"),  # biggest at the top
+                tooltip=[label, alt.Tooltip(value, format=",.0f")],
+            )
+            .properties(height=max(200, 25 * len(result)))
+        )
+        st.altair_chart(chart, use_container_width=True)
 
 
 # ---------- Page layout ----------
@@ -152,7 +164,11 @@ if st.button("Ask", type="primary") and question:
                     st.write(f)
 
         st.subheader("Answer")
-        st.dataframe(result, use_container_width=True)
+        # Show big numbers with commas (1,372,795,000 instead of 1372795000)
+        st.dataframe(
+            result.style.format(precision=0, thousands=","),
+            use_container_width=True,
+        )
         show_chart(result)
 
         st.subheader("How it got this")
