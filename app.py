@@ -31,10 +31,17 @@ def get_models(_client):
     models = []
     if "MODEL" in st.secrets:
         models.append(st.secrets["MODEL"])  # your chosen model goes first
+    # Skip special models (image, audio, voice, etc.) that can't answer text questions
+    skip = ["image", "tts", "audio", "live", "native", "embedding", "robotics", "computer-use"]
+    names = []
     try:
-        names = [m.name.replace("models/", "") for m in _client.models.list()]
+        for m in _client.models.list():
+            name = m.name.replace("models/", "")
+            actions = getattr(m, "supported_actions", None) or ["generateContent"]
+            if "generateContent" in actions and not any(s in name for s in skip):
+                names.append(name)
     except Exception:
-        names = []
+        pass
     # Backups: "lite" models first (fastest), then regular "flash" models
     for n in names:
         if "flash-lite" in n and n not in models:
@@ -131,7 +138,15 @@ def ask(question, log):
     )
     plan = call_ai(prompt, log)
     if plan is None:
-        return None, None, f"All AI models failed or were busy. Try again in a minute.\n\nLast error: {LAST_ERROR['msg']}"
+        msg = LAST_ERROR["msg"]
+        if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+            return None, None, (
+                "The app has used up its free AI limit for today. "
+                "It resets at midnight Pacific time (3 AM Eastern). "
+                "Questions that were already asked still work.\n\n"
+                f"Models tried: {', '.join(MODELS)}"
+            )
+        return None, None, f"All AI models failed or were busy. Try again in a minute.\n\nModels tried: {', '.join(MODELS)}\n\nLast error: {msg}"
 
     fixes = []
     for _ in range(3):
